@@ -1,10 +1,11 @@
-// File: lib.rs
+
+
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
 
-declare_id!("3GVzN1BXzsY4sKkzwDZPkAufWvVNGQKDGr8bWfpuHUY6");
+declare_id!("AvVrHXY5g52kQ89pNf6gZa8EtnoddyznFRstPgSJ88gH");
 
-// Tokenomics : 
+// Tokenomics constants
 const MIN_PROPOSAL_DEPOSIT: u64 = 111_111 * 1_000_000_000; // 111,111 NMT (considering 9 decimals)
 const REVIEW_PERIOD: i64 = 3 * 24 * 60 * 60; // 3 days in seconds
 const DEFAULT_VOTING_PERIOD: i64 = 7 * 24 * 60 * 60; // 7 days in seconds
@@ -12,9 +13,8 @@ const DEFAULT_TIMELOCK: i64 = 2 * 24 * 60 * 60; // 2 days in seconds
 const QUORUM_PERCENTAGE: u8 = 10; // 10% quorum
 const TOTAL_SUPPLY: u64 = 1_111_111_111 * 1_000_000_000; // 1,111,111,111 NMT (considering 9 decimals)
 
-
 #[program]
-pub mod contRideHailingGovernance {
+pub mod cont_ride_hailing_governance {
     use super::*;
 
     // Governance Contract
@@ -27,6 +27,7 @@ pub mod contRideHailingGovernance {
         governance.max_ride_distance = max_ride_distance;
         governance.cancellation_policy = cancellation_policy;
         governance.authority = *ctx.accounts.authority.key;
+        governance.proposal_count = 0;
         Ok(())
     }
 
@@ -57,7 +58,7 @@ pub mod contRideHailingGovernance {
     ) -> Result<()> {
         let governance = &mut ctx.accounts.governance;
         let proposal = &mut ctx.accounts.proposal;
-        let treasury = &ctx.accounts.treasury;
+        let treasury = &mut ctx.accounts.treasury;
         let clock = Clock::get()?;
 
         // Validate proposal creator's NMT balance
@@ -75,31 +76,39 @@ pub mod contRideHailingGovernance {
         token::transfer(cpi_ctx, MIN_PROPOSAL_DEPOSIT)?;
 
         // Update treasury state
-        let treasury = &mut ctx.accounts.treasury;
         treasury.total_locked += MIN_PROPOSAL_DEPOSIT;
 
         // Initialize proposal
+        proposal.id = governance.proposal_count;
+        proposal.creator = *ctx.accounts.authority.key;
+        proposal.title = title;
         proposal.description = description;
-        proposal.vote_yes = 0;
-        proposal.vote_no = 0;
-        proposal.end_time = Clock::get()?.unix_timestamp + voting_period;
+        proposal.options = options;
+        proposal.created_at = clock.unix_timestamp;
+        proposal.review_end_time = clock.unix_timestamp + REVIEW_PERIOD;
+        proposal.voting_end_time = proposal.review_end_time + voting_period.unwrap_or(DEFAULT_VOTING_PERIOD);
+        proposal.execution_time = proposal.voting_end_time + timelock.unwrap_or(DEFAULT_TIMELOCK);
         proposal.is_active = true;
+        proposal.is_executed = false;
+        proposal.total_votes = 0;
+        proposal.votes = vec![0; proposal.options.len()];
+
+        governance.proposal_count += 1;
+
         Ok(())
     }
 
-    pub fn vote(ctx: Context<Vote>, vote: bool) -> Result<()> {
+    pub fn vote(ctx: Context<Vote>, vote: u8) -> Result<()> {
         let proposal = &mut ctx.accounts.proposal;
         require!(proposal.is_active, ErrorCode::ProposalNotActive);
         require!(
-            Clock::get()?.unix_timestamp < proposal.end_time,
+            Clock::get()?.unix_timestamp < proposal.voting_end_time,
             ErrorCode::VotingPeriodEnded
         );
+        require!(vote < proposal.options.len() as u8, ErrorCode::InvalidVoteOption);
 
-        if vote {
-            proposal.vote_yes += 1;
-        } else {
-            proposal.vote_no += 1;
-        }
+        proposal.votes[vote as usize] += 1;
+        proposal.total_votes += 1;
         Ok(())
     }
 
@@ -107,15 +116,25 @@ pub mod contRideHailingGovernance {
         let proposal = &mut ctx.accounts.proposal;
         require!(proposal.is_active, ErrorCode::ProposalNotActive);
         require!(
-            Clock::get()?.unix_timestamp >= proposal.end_time,
+            Clock::get()?.unix_timestamp >= proposal.voting_end_time,
             ErrorCode::VotingPeriodNotEnded
         );
 
         proposal.is_active = false;
+
+        // Check if quorum is reached
+        let total_votes = proposal.total_votes;
+        let quorum = (TOTAL_SUPPLY * QUORUM_PERCENTAGE as u64) / 100;
+        require!(total_votes >= quorum, ErrorCode::QuorumNotReached);
+
+        // Determine if proposal is approved (simple majority)
+        let yes_votes = proposal.votes[0];
+        proposal.is_approved = yes_votes > total_votes / 2;
+
         Ok(())
     }
 
-    // current governing Params : 
+    // Current governing Params
     pub fn initialize_ride_hailing_params(ctx: Context<InitializeRideHailingParams>) -> Result<()> {
         let params = &mut ctx.accounts.ride_hailing_params;
         params.authority = *ctx.accounts.authority.key;
@@ -139,7 +158,7 @@ pub mod contRideHailingGovernance {
         );
 
         let params = &mut ctx.accounts.ride_hailing_params;
-        *params = new_params;
+        params.set_inner(new_params);
         params.authority = ctx.accounts.governance.key();
 
         Ok(())
@@ -151,7 +170,6 @@ pub mod contRideHailingGovernance {
         description: String,
         new_params: RideHailingParams,
     ) -> Result<()> {
-        // ... [Similar to create_proposal, but with specific handling for RideHailingParams]
         let governance = &mut ctx.accounts.governance;
         let proposal = &mut ctx.accounts.proposal;
         let clock = Clock::get()?;
@@ -190,13 +208,12 @@ pub mod contRideHailingGovernance {
         Ok(())
     }
 
-    // Treasury : 
-    pub fn execute_param_update_proposal(ctx: Context<ExecuteParamUpdateProposal>, proposal_id: u64) -> Result<()> {
+    // Treasury
+    pub fn execute_param_update_proposal(ctx: Context<ExecuteParamUpdateProposal>) -> Result<()> {
         let proposal = &mut ctx.accounts.proposal;
         let params = &mut ctx.accounts.ride_hailing_params;
         let clock = Clock::get()?;
-        let treasury = &mut ctx.accounts.treasury;
-    
+
         require!(!proposal.is_active, ErrorCode::ProposalStillActive);
         require!(proposal.is_approved, ErrorCode::ProposalNotApproved);
         require!(!proposal.is_executed, ErrorCode::ProposalAlreadyExecuted);
@@ -205,28 +222,13 @@ pub mod contRideHailingGovernance {
             ErrorCode::TimelockNotExpired
         );
 
-        // Execute proposal logic here
-        // This would typically involve calling other functions to implement the proposal's changes
-
-        // If the proposal involves transferring funds, you would do it here
-        // For example:
-        // let cpi_accounts = Transfer {
-        //     from: ctx.accounts.treasury_token_account.to_account_info(),
-        //     to: ctx.accounts.recipient_token_account.to_account_info(),
-        //     authority: treasury.to_account_info(),
-        // };
-        // let cpi_program = ctx.accounts.token_program.to_account_info();
-        // let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-        // token::transfer(cpi_ctx, amount)?;
-
-
         // Update the parameters
-        *params = proposal.proposed_params.clone();
+        params.set_inner(proposal.proposed_params.clone());
         proposal.is_executed = true;
 
         Ok(())
     }
-
+    
     pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
         let treasury = &mut ctx.accounts.treasury;
         treasury.authority = *ctx.accounts.authority.key;
@@ -253,12 +255,11 @@ pub mod contRideHailingGovernance {
 
         Ok(())
     }
-
 }
 
 #[derive(Accounts)]
 pub struct InitializeGovernance<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 4 + 200)]
+    #[account(init, payer = authority, space = 8 + 32 + 4 + 200 + 8)]
     pub governance: Account<'info, Governance>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -312,6 +313,7 @@ pub struct Governance {
     pub authority: Pubkey,
     pub max_ride_distance: u32,
     pub cancellation_policy: String,
+    pub proposal_count: u64,
 }
 
 #[account]
@@ -321,12 +323,22 @@ pub struct Treasury {
 }
 
 #[account]
+#[derive(Default)]
 pub struct Proposal {
+    pub id: u64,
+    pub creator: Pubkey,
+    pub title: String,
     pub description: String,
-    pub vote_yes: u64,
-    pub vote_no: u64,
-    pub end_time: i64,
+    pub options: Vec<String>,
+    pub votes: Vec<u64>,
+    pub total_votes: u64,
+    pub created_at: i64,
+    pub review_end_time: i64,
+    pub voting_end_time: i64,
+    pub execution_time: i64,
     pub is_active: bool,
+    pub is_approved: bool,
+    pub is_executed: bool,
     pub proposed_params: RideHailingParams,
 }
 
@@ -358,6 +370,7 @@ pub enum ErrorCode {
     TimelockNotExpired,
 }
 
+// New
 impl<'info> From<&mut Deposit<'info>> for CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
     fn from(accounts: &mut Deposit<'info>) -> Self {
         let cpi_accounts = Transfer {
@@ -371,7 +384,6 @@ impl<'info> From<&mut Deposit<'info>> for CpiContext<'_, '_, '_, 'info, Transfer
 }
 
 // Initialize Ride Hailing Params
-
 #[derive(Accounts)]
 pub struct InitializeRideHailingParams<'info> {
     #[account(init, payer = authority, space = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8)]
@@ -433,9 +445,6 @@ pub struct RideHailingParams {
     pub min_ride_distance: u64,
 }
 
-
-
-
 #[derive(Accounts)]
 pub struct LockTokens<'info> {
     #[account(mut)]
@@ -470,7 +479,6 @@ pub struct CreateProposal<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
-
 
 #[derive(Accounts)]
 pub struct ExecuteProposal<'info> {
