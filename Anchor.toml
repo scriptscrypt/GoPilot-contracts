@@ -1,11 +1,9 @@
-[toolchain]
-
 [features]
-resolution = true
+seeds = false
 skip-lint = false
 
 [programs.localnet]
-nmtgovernance = "3GVzN1BXzsY4sKkzwDZPkAufWvVNGQKDGr8bWfpuHUY6"
+cont_ride_hailing_governance = "AvVrHXY5g52kQ89pNf6gZa8EtnoddyznFRstPgSJ88gH"
 
 [registry]
 url = "https://api.apr.dev"
@@ -16,3 +14,4 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+client = "yarn run ts-node client/*.ts"

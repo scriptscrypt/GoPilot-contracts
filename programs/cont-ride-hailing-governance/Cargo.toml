@@ -1,21 +1,20 @@
 [package]
-name = "nmtgovernance"
+name = "cont-ride-hailing-governance"
 version = "0.1.0"
 description = "Created with Anchor"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "nmtgovernance"
+name = "cont_ride_hailing_governance"
 
 [features]
-default = []
-cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+cpi = ["no-entrypoint"]
+default = []
 
 [dependencies]
-anchor-lang = "0.30.0"
-anchor-spl = "0.30.0"
+anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"
