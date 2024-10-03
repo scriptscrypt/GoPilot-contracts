@@ -20,5 +20,31 @@ router.get('/imagekit-auth', (req, res) => {
   res.json(authenticationParameters);
 });
 
+router.post('/upload', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const { image, fileName } = req.body;
+
+    if (!image || !fileName) {
+      return res.status(400).json({ error: 'Image data and file name are required' });
+    }
+
+    // Remove the data:image/[type];base64, part
+    const base64Image = image.split(';base64,').pop();
+
+    const uploadResponse = await imagekit.upload({
+      file: base64Image,
+      fileName: fileName,
+    });
+
+    res.json({
+      success: true,
+      url: uploadResponse.url,
+      fileId: uploadResponse.fileId
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'Failed to upload image' });
+  }
+});
 
 export default router;
